@@ -1,0 +1,260 @@
+---
+title: "Investigating the epidemiology of MISC"
+output:
+  html_document:
+    code_folding: hide
+    toc: yes
+    toc_float: yes
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# Setting up the R environment
+
+### Installing packages and loading the library
+
+```{r libraries, message=FALSE, warning=FALSE, results='hide'}
+# Install packages
+paket <- function(pak){
+  new_pak <- pak[!(pak %in% rownames(installed.packages()))]
+  if (length(new_pak)) 
+    install.packages(new_pak, dependencies = TRUE,repos="https://cloud.r-project.org/")
+  sapply(pak, library, character.only = TRUE)
+}
+
+listOfPackages <- c("tidyverse", "RColorBrewer", "knitr", "kableExtra","tableone", "gridExtra", "dplyr", "lubridate")
+paket(listOfPackages)
+```
+
+### R session information
+
+```{r}
+sessionInfo()
+```
+
+### Plots aesthetics information
+
+```{r}
+theme_plots <- theme_bw() +
+  theme(strip.text = element_text(size = 5),
+        axis.text.x = element_text(size = 8), 
+        axis.text.y = element_text(size = 6), 
+        axis.title.x = element_text(size = 8),
+        axis.title.y = element_text(size = 8),
+        title = element_text(size = 10),
+        plot.subtitle = element_text(size = 9, face = "italic")) 
+theme_set(theme_plots)
+
+# Colorblind palette
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+```
+
+# Data retrieval
+
+## Inclusion criteria
+Patients inclusion criteria:
+
+    -   Children (<21 years) 
+    -   Diagnosed with MIS-C based on CDC/WHO/RCPCH criteria  
+
+
+## Variables that need to be checked/modified by each site
+
+Change the values of the following variables according to the specificities of your site:
+
+1.  "folder_4ce_files": folder path where your phase 2.2 data files are
+    located
+
+2.   "obfuscation": determine the obfuscation threshold (FALSE if no
+    obfuscation, or the numeric value of the obfuscation threshold if
+    any)
+
+3.   "raceAvailable": set as TRUE or FALSE depending on whether the
+    variable is being collected at your site
+
+4.   "dateFormat": specify the format of the date at your site (e.g., for
+    "03-AUG-20", the format would be "%d-%b-%y", [see
+    documentation](https://www.stat.berkeley.edu/~s133/dates.html))
+    
+5. "data_update_date": date at which the data has been updated in the local 
+data warehouse. Used to estimate patient age at time of visit, since patients age
+in the 4CE demographic file is expected the age at data update. 
+
+6. "country": 
+
+```{r message=FALSE, warning=FALSE}
+folder_4ce_files <- "/4ceData/Input/4ce/"
+obfuscation =  FALSE
+raceAvailable = TRUE
+dateFormat <- "%d-%b-%y"
+data_update_date <- "2022-04-02"
+country <- "USA"
+```
+
+## Data loading
+
+We will use as input the 2.2 data files. Specifically: 
+
+- LocalPatientSummary 
+
+- LocalPatientObservation 
+
+- LocalPatientClinicalcourse
+
+For sites recording the race, we will also use an additional file: 
+
+- LocalPatientRace
+
+### Reading 4CE phase 2.2 files
+
+```{r message=FALSE, warning=FALSE}
+### Read the CSV input files
+source("R/readInputFiles.R")
+
+getwd()
+files <- readInputFiles( path      = folder_4ce_files, 
+                         separator = ",",
+                         skip      = 0, 
+                         verbose   = FALSE )
+  
+## Create the output folder if it doesn't exist
+if (! "output" %in% list.dirs()) dir.create("output")
+
+### Extract the patient summary and observation information. 
+demo_raw <- files[["patientSummary"]] 
+obs_raw <- files[["patientObservations"]] 
+clinical_raw <- files[["patientClinicalCourse"]] 
+
+### Read the file containing race information for those sites recording this variable
+if( raceAvailable == TRUE ){
+  race_raw <- read.delim(file.path(folder_4ce_files, "/LocalPatientRace.csv"), sep = ",", skip = 0)
+}
+```
+
+## Extract the MIS-C patients and assign the variant based on the date they were diagnosed with MISC
+```{r}
+misc_patients <- obs_raw %>%
+  filter( concept_type == "COVID-MISC") 
+
+misc_all <- left_join( misc_patients, clinical_raw[, c("patient_num", "days_since_admission", "calendar_date", "in_hospital", "severe", "in_icu", "dead")], by=c("patient_num", "days_since_admission"))
+
+misc_all <- left_join( misc_all, demo_raw[, c("patient_num", "age", "sex", "admission_date")], by= "patient_num") %>%
+  mutate( date = as.Date( admission_date, format = dateFormat ), 
+          variant_misc = ifelse( date >= "2022-01-15", "Omicron", ifelse( date <= "2021-07-15", "Alpha", "Delta"))) 
+
+misc_complete <- misc_all %>%
+  filter( !is.na( calendar_date )) %>%
+   dplyr::mutate( weeks = as.Date(cut( date, breaks = "week")),
+                  month = as.Date(cut( date, breaks = "month")),
+                  year = format( date, "%Y"))
+```
+
+## Estimate number of MIS-C cases per month
+```{r}
+misc_cases <- misc_complete %>%
+  dplyr::group_by( month ) %>%
+  dplyr::summarise( distinct_patients = length(unique(patient_num))) 
+
+### plot barplot
+ggplot(data=misc_cases, aes(x=month, y=distinct_patients)) +
+  geom_bar(stat="identity") 
+
+## number of patients by misc variant
+misc_complete %>%
+  dplyr::group_by( variant_misc ) %>%
+  dplyr::summarise( distinct_patients = length(unique(patient_num))) 
+```
+
+## Estimate for the MIS-C patients death and ICU admissions per wave 
+```{r}
+misc_icu <- misc_complete %>%
+  filter( in_icu == 1) %>%
+  dplyr::group_by( variant_misc ) %>%
+  dplyr::summarise( icu_patients = length(unique(patient_num))) %>%
+  dplyr::mutate( var = "ICU")
+
+ggplot(misc_icu, aes(fill=variant_misc, y=icu_patients, x=var)) + 
+    geom_bar(position="dodge", stat="identity") +
+  scale_fill_manual( values = cbPalette)
+```
+## Estimate for the MIS-C patients age and sex ratio
+```{r}
+misc_complete %>%
+  dplyr::group_by( variant_misc ) %>%
+  ggplot(aes(variant_misc, age))+
+  geom_boxplot(aes(fill=variant_misc), position = "dodge") +
+  scale_fill_manual( values = cbPalette)
+
+
+misc_sex_ratio <- misc_complete %>%
+  dplyr::group_by( variant_misc, sex ) %>%
+  dplyr::summarise( n =  length(unique(patient_num))) %>%
+  dplyr::group_by( variant_misc ) %>%
+  dplyr::mutate( ratio = n/sum(n))
+
+ggplot(misc_sex_ratio, aes(fill=variant_misc, y=n, x=sex)) + 
+    geom_bar(position="dodge", stat="identity") +
+  scale_fill_manual( values = cbPalette)
+```
+
+## Estimate the length of the MISC hospitalization 
+
+```{r}
+### this code is copy-paste from the peds psy study
+clinical_raw_hosp <- filter(clinical_raw, in_hospital == 1)
+
+count_sequences_hospitalisation <- function(df, ...) {
+  seq_hospitalisation_df <- data.frame(total_span = seq(min(df$days_since_admission),
+                                                        max(df$days_since_admission))
+  ) %>%
+    left_join(df, by = c("total_span" = "days_since_admission")) %>%
+    replace_na(list(in_hospital = 0))
+  count_sequences <- rle(seq_hospitalisation_df$in_hospital)
+  count_sequences_1 <- lapply(count_sequences, function(x) x[count_sequences$values == 1])
+  n_sequences <- seq_along(count_sequences_1$lengths)
+  sequences <- rep.int(n_sequences, count_sequences_1$lengths)
+  sequences_len <- rep.int(count_sequences_1$lengths, count_sequences_1$lengths)
+  stopifnot(length(df$days_since_admission) == length(sequences))
+  data.frame(days_since_admission = df$days_since_admission,
+             n_hospitalisation = sequences,
+             len_hospitalisation = sequences_len)
+}
+stopifnot(all(clinical_raw_hosp$in_hospital == 1))
+hospitalisations_seq_df <- clinical_raw_hosp %>%
+  distinct(patient_num, cohort, days_since_admission, in_hospital) %>%
+  group_by(patient_num, cohort) %>%
+  group_modify(count_sequences_hospitalisation)
+
+misc_hosp_length <- left_join(misc_complete,
+                          hospitalisations_seq_df,
+                          by = c("patient_num", "cohort", "days_since_admission"))
+
+misc_hosp_length$len_hospitalisation <- ifelse( is.na(misc_hosp_length$len_hospitalisation), 0, misc_hosp_length$len_hospitalisation)
+misc_hosp_length %>%
+  dplyr::group_by( variant_misc ) %>%
+  ggplot(aes(variant_misc, as.numeric(len_hospitalisation)))+
+  geom_boxplot(aes(fill=variant_misc), position = "dodge", outlier.shape = NA) +
+  scale_y_continuous(limits = quantile(misc_hosp_length$len_hospitalisation,na.rm = T,  c(0.1, 0.9))) +
+  scale_fill_manual( values = cbPalette)
+
+```
+
+
+## Estimate MISC patients that required ECMO
+
+```{r}
+misc_hosp_length <- misc_hosp_length %>%
+  mutate( key = paste0( cohort, patient_num, days_since_admission ) )
+
+obs_data_filter <- obs_raw %>%
+  filter( patient_num %in% misc_complete$patient_num ) %>%
+  mutate( key = paste0( cohort, patient_num, days_since_admission )) %>%
+  filter( key %in% misc_hosp_length$key )
+
+
+ecmo_pat <- obs_data_filter %>%
+  filter( concept_code == "ECMO")
+### no misc patients ecmo so far?
+```
+
