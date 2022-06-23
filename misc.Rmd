@@ -89,7 +89,7 @@ obfuscation =  FALSE
 raceAvailable = TRUE
 dateFormat <- "%d-%b-%y"
 data_update_date <- "2022-04-02"
-country <- "USA"
+country <- "US"
 ```
 
 ## Data loading
@@ -130,6 +130,10 @@ clinical_raw <- files[["patientClinicalCourse"]]
 if( raceAvailable == TRUE ){
   race_raw <- read.delim(file.path(folder_4ce_files, "/LocalPatientRace.csv"), sep = ",", skip = 0)
 }
+
+### Read the file containing the variants dates per country
+variantsDates <- read.delim("./public-data/variantsDates.txt", sep = "\t") %>%
+  filter( Country == country )
 ```
 
 ## Extract the MIS-C patients and assign the variant based on the date they were diagnosed with MISC
@@ -141,7 +145,7 @@ misc_all <- left_join( misc_patients, clinical_raw[, c("patient_num", "days_sinc
 
 misc_all <- left_join( misc_all, demo_raw[, c("patient_num", "age", "sex", "admission_date")], by= "patient_num") %>%
   mutate( date = as.Date( admission_date, format = dateFormat ), 
-          variant_misc = ifelse( date >= "2022-01-15", "Omicron", ifelse( date <= "2021-07-15", "Alpha", "Delta"))) 
+          variant_misc = ifelse( date >= variantsDates$Omicron, "Omicron", ifelse( date <= variantsDates$Alpha, "Alpha", "Delta"))) 
 
 misc_complete <- misc_all %>%
   filter( !is.na( calendar_date )) %>%
