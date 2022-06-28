@@ -1,0 +1,3 @@
+variableName	concept_code	description
+fever	R50.9	Fever of other and unknown origin
+elevatedCRP	R79.82	Elevated C-reactive protein (CRP)
