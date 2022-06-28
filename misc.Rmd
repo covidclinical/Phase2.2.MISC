@@ -1,12 +1,14 @@
 ---
 title: "Investigating the epidemiology of MISC"
 output:
+  word_document:
+    toc: yes
   html_document:
     code_folding: hide
     toc: yes
     toc_float: yes
-editor_options: 
-  markdown: 
+editor_options:
+  markdown:
     wrap: 72
 ---
 
@@ -260,5 +262,65 @@ obs_data_filter <- obs_raw %>%
 ecmo_pat <- obs_data_filter %>%
   filter( concept_code == "ECMO")
 ### no misc patients ecmo so far?
+
+cpr_pat <- obs_data_filter %>%
+  filter( concept_code == "CPR")
+```
+
+## Add vaccination status
+```{r}
+vaccinated_pat <- obs_raw %>%
+  filter( patient_num %in% misc_hosp_length$patient_num ) %>%
+  filter( concept_code == "CovidVaccine") %>%
+  select( patient_num, days_since_admission, concept_type, concept_code)
+
+## at BCH only 4 patients with the CovidVaccine code and none of them part of the misc cohort
+```
+
+## Prepare a table to perform logistic regression
+```{r}
+mainTable <- misc_hosp_length %>%
+  select( patient_num, date, variant_misc, len_hospitalisation, age, sex, in_icu, dead ) %>%
+  mutate( ecmo = ifelse( patient_num %in% ecmo_pat$patient_num, 1, 0), 
+          cpr = ifelse( patient_num %in% cpr_pat$patient_num, 1, 0), 
+          vaccinated = ifelse( patient_num %in% vaccinated_pat$patient_num, 1, 0 ))
+        
+if( raceAvailable == TRUE ){
+  mainTable <- left_join( mainTable, race_raw %>% select( patient_num, race_4ce), by="patient_num")
+}          
+
+### add other variables present in the clinical characteristic table
+clinicalCharact <- read.delim('public-data/clinicalCharacteristics.txt')
+
+clin_var <- obs_data_filter %>%
+  filter( concept_code %in% clinicalCharact$concept_code ) %>%
+  left_join( clinicalCharact, by = "concept_code") %>%
+  mutate( value = 1 ) %>%
+  select( patient_num, concept_code, variableName, value)
+
+clin_var2merge <- clin_var %>%
+   spread(key = variableName, value =  value, fill = 0) %>%
+  select( -concept_code)
+
+### add the new variables 
+mainTable <- mainTable %>%
+  left_join( clin_var2merge, by = "patient_num") %>%
+  replace(is.na(.), 0)
+```
+
+### Summary of procedures and meds present in the MISC patients during MISC hospitalization
+```{r}
+obs_data_filter %>% 
+  filter( concept_type == "MED-CLASS") %>% 
+  dplyr::group_by( concept_code ) %>% 
+  dplyr::summarise( patients =  length(unique(patient_num))) %>%
+  dplyr::arrange( desc(patients) )
+
+obs_data_filter %>% 
+  filter( concept_type == "PROC-GROUP") %>% 
+  dplyr::group_by( concept_code ) %>%
+  dplyr::summarise( patients =  length(unique(patient_num))) %>%
+  dplyr::arrange( desc(patients) )
+
 ```
 
