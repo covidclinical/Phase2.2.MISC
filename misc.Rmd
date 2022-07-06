@@ -25,7 +25,7 @@ paket <- function(pak){
   sapply(pak, library, character.only = TRUE)
 }
 
-listOfPackages <- c("tidyverse", "RColorBrewer", "knitr", "kableExtra","tableone", "gridExtra", "dplyr", "lubridate")
+listOfPackages <- c("tidyverse", "RColorBrewer", "knitr", "kableExtra","tableone", "gridExtra", "dplyr", "lubridate", "MatchIt", "table1")
 paket(listOfPackages)
 ```
 
@@ -246,9 +246,7 @@ misc_hosp_length %>%
 
 ```
 
-
-## Estimate MISC patients that required ECMO
-
+### Summary of procedures and meds present in the MISC patients during MISC hospitalization
 ```{r}
 misc_hosp_length <- misc_hosp_length %>%
   mutate( key = paste0( cohort, patient_num, days_since_admission ) )
@@ -258,32 +256,30 @@ obs_data_filter <- obs_raw %>%
   mutate( key = paste0( cohort, patient_num, days_since_admission )) %>%
   filter( key %in% misc_hosp_length$key )
 
+meds_sum <- obs_data_filter %>% 
+  filter( concept_type == "MED-CLASS") %>% 
+  dplyr::group_by( concept_code ) %>% 
+  dplyr::summarise( patients =  length(unique(patient_num))) %>%
+  dplyr::arrange( desc(patients) )
 
-ecmo_pat <- obs_data_filter %>%
-  filter( concept_code == "ECMO")
-### no misc patients ecmo so far?
+print( meds_sum) 
 
-cpr_pat <- obs_data_filter %>%
-  filter( concept_code == "CPR")
+prod_sum <- obs_data_filter %>% 
+  filter( concept_type == "PROC-GROUP") %>% 
+  dplyr::group_by( concept_code ) %>%
+  dplyr::summarise( patients =  length(unique(patient_num))) %>%
+  dplyr::arrange( desc(patients) )
+
+print( prod_sum)
 ```
 
-## Add vaccination status
-```{r}
-vaccinated_pat <- obs_raw %>%
-  filter( patient_num %in% misc_hosp_length$patient_num ) %>%
-  filter( concept_code == "CovidVaccine") %>%
-  select( patient_num, days_since_admission, concept_type, concept_code)
 
-## at BCH only 4 patients with the CovidVaccine code and none of them part of the misc cohort
-```
 
 ## Prepare a table to perform logistic regression
+
 ```{r}
 mainTable <- misc_hosp_length %>%
-  select( patient_num, date, variant_misc, len_hospitalisation, age, sex, in_icu, dead ) %>%
-  mutate( ecmo = ifelse( patient_num %in% ecmo_pat$patient_num, 1, 0), 
-          cpr = ifelse( patient_num %in% cpr_pat$patient_num, 1, 0), 
-          vaccinated = ifelse( patient_num %in% vaccinated_pat$patient_num, 1, 0 ))
+  select( patient_num, date, variant_misc, len_hospitalisation, age, sex, in_icu, dead )
         
 if( raceAvailable == TRUE ){
   mainTable <- left_join( mainTable, race_raw %>% select( patient_num, race_4ce), by="patient_num")
@@ -299,28 +295,92 @@ clin_var <- obs_data_filter %>%
   select( patient_num, concept_code, variableName, value)
 
 clin_var2merge <- clin_var %>%
-   spread(key = variableName, value =  value, fill = 0) %>%
+  spread(key = variableName, value =  value, fill = 0) %>%
   select( -concept_code)
 
-### add the new variables 
+### add the new variables and  
 mainTable <- mainTable %>%
-  left_join( clin_var2merge, by = "patient_num") %>%
-  replace(is.na(.), 0)
+  dplyr::left_join( clin_var2merge, by = "patient_num") %>%
+  replace(is.na(.), 0) 
+
+## any non-present variable as empty column all with 0
+varsNoPatients <- clinicalCharact %>%
+  dplyr::select( variableName ) %>%
+  unique( ) %>%
+  dplyr::filter(! variableName %in% colnames( mainTable )) 
+
+for( i in 1:length( varsNoPatients$variableName )){
+  mainTable[ varsNoPatients$variableName[i]] <- 0
+}
+
+## Add a column called cardiovascular outcome
+# logic to fill this new colum: it will be a 1 if the patient has 
+# Cardiovascular outcome: SICARDIAC OR/AND Shock related ICD-10 code AND/OR ECMO  AND/OR CARDIAC ARREST AND/OR CPR
+mainTable <- mainTable %>%
+  dplyr::mutate( cardiovascular_outcome = ifelse( SICARDIAC == 1 | Shock == 1| ECMO == 1 | `Cardiac arrest` == 1 | CPR == 1, 1, 0))
+
+## check if all patients with cardiovascular outcome where in ICU
+# toCheck <- mainTable %>% 
+#  dplyr::filter( cardiovascular_outcome == 1) %>%
+#  dplyr::mutate( check = ifelse( in_icu == 1, "OK", "CHECK" )) %>%
+#  dplyr::filter( check == "CHECK") %>%
+#  dplyr::select( patient_num, in_icu, cardiovascular_outcome, SICARDIAC, Shock,ECMO, CPR, `Cardiac arrest`  )
 ```
 
-### Summary of procedures and meds present in the MISC patients during MISC hospitalization
+## Table 1
 ```{r}
-obs_data_filter %>% 
-  filter( concept_type == "MED-CLASS") %>% 
-  dplyr::group_by( concept_code ) %>% 
-  dplyr::summarise( patients =  length(unique(patient_num))) %>%
-  dplyr::arrange( desc(patients) )
+mainTable$sex    <- factor(mainTable$sex, levels=c("male", "female"), labels=c("Male", "Female"))
+mainTable$variant_misc    <- factor(mainTable$variant_misc)
+mainTable$race_4ce     <- factor(mainTable$race_4ce, 
+                                 levels=c("white", "black", "asian", "american_indian", "other", "n_information"),
+                                 labels=c("White", "Black", "Asian", "American indian", "Other", "Not Available"))
 
-obs_data_filter %>% 
-  filter( concept_type == "PROC-GROUP") %>% 
-  dplyr::group_by( concept_code ) %>%
-  dplyr::summarise( patients =  length(unique(patient_num))) %>%
-  dplyr::arrange( desc(patients) )
+mainTable$in_icu  <- as.logical(mainTable$in_icu == 1)
+mainTable$dead <- as.logical(mainTable$dead == 1)
+mainTable$elevatedCRP <- as.logical(mainTable$elevatedCRP == 1)
+mainTable$Shock <- as.logical(mainTable$Shock == 1)
+mainTable$ECMO <- as.logical(mainTable$ECMO == 1)
+mainTable$SICARDIAC <- as.logical(mainTable$SICARDIAC == 1)
+mainTable$CPR <- as.logical(mainTable$CPR == 1)
+mainTable$cardiovascular_outcome <- as.logical(mainTable$cardiovascular_outcome == 1)
+mainTable$`Heart failure` <- as.logical(mainTable$`Heart failure` == 1)
+mainTable$`Respiratory failure` <- as.logical(mainTable$`Respiratory failure` == 1)
+mainTable$`Cardiac arrest` <- as.logical(mainTable$`Cardiac arrest` == 1)
 
+label(mainTable$race_4ce) <- "Race"
+label(mainTable$age)      <- "Age"
+label(mainTable$len_hospitalisation) <- "Length of hospitalization (days)"
+label(mainTable$sex)  <- "Sex"
+label(mainTable$in_icu) <- "ICU"
+label(mainTable$elevatedCRP)  <- "Elevated CRP"
+label(mainTable$cardiovascular_outcome)     <- "Cardiovascular Outcome"
+label(mainTable$variant_misc)     <- "Variant MIS-C"
+
+```
+
+## Function to estimate the p-values extracted from the table1 vignettes
+```{r}
+# using as reference https://cran.r-project.org/web/packages/table1/vignettes/table1-examples.html 
+pvalue <- function(x, ...) {
+    # Construct vectors of data y, and groups (strata) g
+    y <- unlist(x)
+    g <- factor(rep(1:length(x), times=sapply(x, length)))
+    if (is.numeric(y)) {
+        # For numeric variables, perform a standard 2-sample t-test
+        p <- t.test(y ~ g)$p.value
+    } else {
+        # For categorical variables, perform a chi-squared test of independence
+        p <- chisq.test(table(y, g))$p.value
+    }
+    # Format the p-value, using an HTML entity for the less-than sign.
+    # The initial empty string places the output on the line below the variable label.
+    c("", sub("<", "&lt;", format.pval(p, digits=3, eps=0.001)))
+}
+```
+
+## Create the table
+```{r}
+table1::table1(~ age + race_4ce + len_hospitalisation + in_icu + dead + cardiovascular_outcome + elevatedCRP + Shock + SICARDIAC + ECMO + `Heart failure` + `Cardiac arrest` + `Respiratory failure` | variant_misc,
+    data=mainTable, extra.col=list(`P-value`=pvalue))
 ```
 
