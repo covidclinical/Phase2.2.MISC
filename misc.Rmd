@@ -249,12 +249,20 @@ misc_hosp_length %>%
 ### Summary of procedures and meds present in the MISC patients during MISC hospitalization
 ```{r}
 misc_hosp_length <- misc_hosp_length %>%
-  mutate( key = paste0( cohort, patient_num, days_since_admission ) )
+  mutate( comb = paste0( cohort, patient_num, n_hospitalisation ) )
+
+misc_all_days_hospitalized <- hospitalisations_seq_df %>%
+    mutate( key = paste0( cohort, patient_num, days_since_admission ), 
+            comb = paste0( cohort, patient_num, n_hospitalisation ) ) %>%
+  filter( comb %in% misc_hosp_length$comb)
+
+
+## select all days of the hospitalization
 
 obs_data_filter <- obs_raw %>%
   filter( patient_num %in% misc_complete$patient_num ) %>%
   mutate( key = paste0( cohort, patient_num, days_since_admission )) %>%
-  filter( key %in% misc_hosp_length$key )
+  filter( key %in% misc_all_days_hospitalized$key )
 
 meds_sum <- obs_data_filter %>% 
   filter( concept_type == "MED-CLASS") %>% 
@@ -292,7 +300,8 @@ clin_var <- obs_data_filter %>%
   filter( concept_code %in% clinicalCharact$concept_code ) %>%
   left_join( clinicalCharact, by = "concept_code") %>%
   mutate( value = 1 ) %>%
-  select( patient_num, concept_code, variableName, value)
+  select( patient_num, concept_code, variableName, value) %>%
+  unique()
 
 clin_var2merge <- clin_var %>%
   spread(key = variableName, value =  value, fill = 0) %>%
@@ -337,7 +346,6 @@ mainTable$race_4ce     <- factor(mainTable$race_4ce,
 
 mainTable$in_icu  <- as.logical(mainTable$in_icu == 1)
 mainTable$dead <- as.logical(mainTable$dead == 1)
-mainTable$elevatedCRP <- as.logical(mainTable$elevatedCRP == 1)
 mainTable$Shock <- as.logical(mainTable$Shock == 1)
 mainTable$ECMO <- as.logical(mainTable$ECMO == 1)
 mainTable$SICARDIAC <- as.logical(mainTable$SICARDIAC == 1)
@@ -352,7 +360,6 @@ label(mainTable$age)      <- "Age"
 label(mainTable$len_hospitalisation) <- "Length of hospitalization (days)"
 label(mainTable$sex)  <- "Sex"
 label(mainTable$in_icu) <- "ICU"
-label(mainTable$elevatedCRP)  <- "Elevated CRP"
 label(mainTable$cardiovascular_outcome)     <- "Cardiovascular Outcome"
 label(mainTable$variant_misc)     <- "Variant MIS-C"
 
@@ -361,7 +368,7 @@ label(mainTable$variant_misc)     <- "Variant MIS-C"
 ## Function to estimate the p-values extracted from the table1 vignettes
 ```{r}
 # using as reference https://cran.r-project.org/web/packages/table1/vignettes/table1-examples.html 
-pvalue <- function(x, ...) {
+ownpvalue <- function(x, ...) {
     # Construct vectors of data y, and groups (strata) g
     y <- unlist(x)
     g <- factor(rep(1:length(x), times=sapply(x, length)))
@@ -380,7 +387,36 @@ pvalue <- function(x, ...) {
 
 ## Create the table
 ```{r}
-table1::table1(~ age + race_4ce + len_hospitalisation + in_icu + dead + cardiovascular_outcome + elevatedCRP + Shock + SICARDIAC + ECMO + `Heart failure` + `Cardiac arrest` + `Respiratory failure` | variant_misc,
-    data=mainTable, extra.col=list(`P-value`=pvalue))
+table1::table1(~ age + race_4ce + len_hospitalisation + in_icu + dead + cardiovascular_outcome + Shock + SICARDIAC + ECMO + `Heart failure` + `Cardiac arrest` + `Respiratory failure` | variant_misc,
+    data=mainTable, extra.col=list(`P-value`=ownpvalue))
+```
+
+### Check if we have mechanical ventilation or intubation 
+
+```{r}
+# procedures_all <- obs_raw %>% 
+#   filter( concept_type == "PROC-GROUP") %>% 
+#   dplyr::group_by( concept_code ) %>%
+#   dplyr::summarise( patients =  length(unique(patient_num))) %>%
+#   dplyr::arrange( desc(patients) )
+# 
+# obs_data_filter %>% filter( concept_code == "Z99.11")
+```
+
+### Laboratory values during the MIS-C hospitalization
+
+```{r}
+### read the table with the labs of interest and the expected ranges
+laboratoryCharact <- read.delim('public-data/laboratoryCharacteristics.txt')
+
+lab_var <- obs_data_filter %>%
+  filter( concept_code %in% laboratoryCharact$concept_code ) %>%
+  left_join( laboratoryCharact, by = "concept_code") %>%
+  select( patient_num, concept_code, variableName, value, days_since_admission )
+
+getMaxValues <- lab_var %>%
+  dplyr::group_by( patient_num, concept_code ) %>%
+  dplyr::mutate( max = max( value ), 
+                 min = min( value ))
 ```
 
